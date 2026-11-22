@@ -1,0 +1,191 @@
+# playbook-expurgo.yaml — playbook de automação com expurgo, em YAML ilustrativo.
+#
+# O QUE ISTO É: implementação de referência própria, reconstruída a partir de
+# prática, para servir de modelo de escrita. NÃO é definição executável de
+# nenhuma engine específica (Ansible, Rundeck, n8n, workflow interno) nem código
+# de nenhum empregador ou cliente. Os nomes de componente, caminho e política são
+# fictícios e genéricos por construção.
+#
+# O QUE ISTO NÃO É: não há host, conta, bucket, credencial ou caminho real aqui.
+# Onde um dado real seria necessário, aparece placeholder em MAIÚSCULAS-ENTRE-
+# COLCHETES ou `<PLACEHOLDER>`, e uma linha `motivo_do_dado_ausente` explicando.
+#
+# Por que o dry-run é o default: em expurgo, o erro não é barulho, é dado
+# destruído. Todo playbook destrutivo deste repositório nasce com
+# `modo: simular`, exige aprovação explícita para mudar, e imprime o que
+# *teria* feito. Se o seu playbook não responde "quanto ele ia apagar?" antes de
+# apagar, ele não é um playbook: é um incidente agendado.
+
+meta:
+  id: pb-expurgo-retencao-001
+  nome: Expurgo de artefatos acima da política de retenção
+  versao: 1.3.0
+  dona: sre-observabilidade
+  revisada_em: "2026-04-18"
+  proxima_revisao: "2026-10-18"          # 6 meses; playbook vencido é playbook mentiroso
+  testado_em: GameDay-2026-03            # sem teste registrado, o agente NÃO pode propor este playbook
+  criticidade: alta                       # muda a política de aprovação
+  classificacao_de_risco:
+    reversibilidade: irreversivel-depois-da-primeira-execucao
+    blast_radius_maximo: por-componente   # nunca "cluster inteiro" neste playbook
+    efeito_colateral_financeiro: false
+
+quando_usar:
+  gatilhos:
+    - tipo: metrica
+      sinal: storage_usado_vs_politica_pct
+      condicao: "> 90 por 6h"
+    - tipo: custo
+      sinal: crescimento_semanal_pct_por_tag
+      condicao: "> 25 por 2 semanas"
+    - tipo: manual
+      descricao: pedido de time para liberar volume antes de janela de fechamento
+  nao_usar_quando:
+    - ha_incidente_ativo_severidade: [S1, S2]     # expurgar durante incidente apaga a evidência
+    - janela_de_liquidacao_ativa: true            # "liberar disco" no fechamento é trocar um problema por outro
+    - telemetria_suspeita: true                   # série com gap: pode haver job de expurgo quebrado antes do seu
+    - outro_expurgo_em_andamento: true
+
+politicas:
+  retencao:
+    - classe: logs-de-transacao
+      manter_dias: 30
+      depois_de: data_do_evento          # nunca data de ingestão: backlog reprocessado apagaria cedo
+      base_legal: operacao-de-servico-de-pagamento
+    - classe: artefatos-de-deploy
+      manter_versoes: 5
+      manter_sempre: [versao_em_producao, versao_anterior_imediata]
+    - classe: dumps-e-cores
+      manter_horas: 72
+      excecao: "dumps referenciados por incidente aberto são preservados"
+  teto_por_execucao:
+    max_gb: 200
+    max_objetos: 50000
+    motivo: "teto existe para limitar o estrago de um erro de premissa, não o trabalho"
+  taxa:
+    objetos_por_segundo: 100
+    motivo: "expurgo rápido demais vira pressão de I/O no mesmo volume que ele libera"
+
+pre_condicoes:
+  - id: pc-lock
+    descricao: adquire lock por componente (execução concorrente do mesmo playbook é o pior caso)
+    comando: "lock acquire --chave pb-expurgo/<COMPONENTE-A> --ttl 4h"
+    falha_bloqueia: true
+  - id: pc-inventario
+    descricao: inventário do que existe, por classe de retenção
+    comando: "inventory scan --componente <COMPONENTE-A> --politica retencao --saida out/inventario.json"
+    falha_bloqueia: true
+  - id: pc-referencias
+    descricao: nenhum objeto na lista de expurgo está referenciado por incidente aberto ou auditoria vigente
+    comando: "referencias checar --inventario out/inventario.json --janela <POLITICA-DE-RETENCAO-LEGAL>"
+    falha_bloqueia: true
+    observacao: "este é o check que separa automação de gambiarra; sem ele, o playbook apaga evidência"
+  - id: pc-restore
+    descricao: snapshot de restauração disponível e com idade menor que 24h (para classes que admitem)
+    comando: "snapshot listar --componente <COMPONENTE-A> --max-idade 24h"
+    falha_bloqueia: false
+    acao_na_falha: registrar-risco-e-exigir-aprovacao-humana
+  - id: pc-estimativa
+    descricao: estimativa de bytes liberados e de tempo de execução, impressa antes de qualquer escrita
+    comando: "expurgar --inventario out/inventario.json --dry-run --saida out/estimativa.md"
+    falha_bloqueia: true
+
+passos:
+  - ordem: 1
+    nome: simular
+    modo: simular
+    comando: "expurgar --inventario out/inventario.json --dry-run --limite <TETO-POR-EXECUCAO> --saida out/plano.json"
+    idempotente: true
+    saida_esperada:
+      registros: "> 0"
+      bytes_estimados: "<= teto_por_execucao.max_gb"
+    interromper_se:
+      - "bytes_estimados > teto_por_execucao.max_gb"
+      - "classes_na_politica == 0"           # inventário vazio normalmente significa permissão, não limpeza
+      - "converte_liquidacao_em_risco: true"
+
+  - ordem: 2
+    nome: aprovacao-humana
+    tipo: aprovacao
+    quem: "dono-do-componente ou plantao-sre-com-permissao-de-escrita"
+    o_que_o_aprovador_ve:
+      - out/estimativa.md                    # exatamente o que será apagado, em quantidade e classe
+      - "3 amostras de objeto por classe (chave e tamanho, sem conteúdo)"
+      - "tempo estimado e teto aplicado"
+    expira_em_minutos: 60
+    motivo_expiracao: "aprovação velha não autoriza execução; o mundo mudou desde então"
+    proibido: "aprovar por resumo ('vai rodar o expurgo aí'). Se não mostrou o plano, não é aprovação."
+
+  - ordem: 3
+    nome: expurgar-por-classe
+    modo: escrever
+    comando: "expurgar --plano out/plano.json --classe logs-de-transacao --limite <TETO-POR-EXECUCAO> --idempotencia-chave pb-expurgo-retencao-001/3/<COMPONENTE-A>"
+    depende_de: 2
+    idempotente: true
+    lote:
+      tamanho: 1000
+      pausa_entre_lotes_segundos: 30
+      motivo: "observar pressão no volume entre lotes; se subir, o próximo lote não roda"
+    criterio_de_parada_imediata:
+      - "latencia_p95_do_componente > objetivo * 2 por 3 min"
+      - "erros_de_io > 0,1% das operações"
+      - "qualquer sinal de liquidação/janela crítica em andamento"
+    rollback: "não há rollback de objeto apagado: existe snapshot, restauração parcial e reprocessamento. Ver `recuperacao`."
+
+  - ordem: 4
+    nome: verificar-estado-final
+    modo: somente-leitura
+    comando: "estado atual --componente <COMPONENTE-A> --formato json"
+    verificacoes:
+      - "storage_usado_pct reduziu na ordem do estimado (tolerância 20%)"
+      - "nenhuma classe com retenção violada permanece acima do limite"
+      - "a série de latência do componente voltou à faixa anterior ao expurgo"
+    se_falhar: "abrir incidente S3 com o plano executado anexado; NÃO re-tentar o expurgo às cegas"
+
+  - ordem: 5
+    nome: registrar
+    modo: escrever
+    comando: "registro escrever --tipo expurgo --plano out/plano.json --resultado out/resultado.json --quem <APROVADOR>"
+    conteudo_obrigatorio:
+      - "bytes e objetos realmente removidos vs. estimados"
+      - "tempo total e por lote"
+      - "interrompeu? por qual critério?"
+      - "o que ficaria diferente na próxima execução"
+    motivo: "sem registro comparável, 'automatizamos o expurgo' é adjetivo"
+
+recuperacao:
+  snapshot_disponivel: true
+  procedimento: |
+    1. Identificar a classe e o intervalo temporal perdido (a lista de chaves fica
+       no out/plano.json executado — por isso o plano é gravado antes de executar).
+    2. Restauração parcial por prefixo, nunca "tudo": restaurar tudo sobre um
+       volume que já mudou é a segunda metade do incidente.
+    3. Confirmar consistência com o job de reconciliação do componente.
+    4. Abrir post-mortem mesmo que a restauração funcione: o playbook errou na
+       estimativa, não na execução.
+  tempo_alvo_de_restauracao: "[medir: mediana das últimas 3 restaurações de teste em ambiente de homologação]"
+
+guardrails_globais:
+  kill_switch:
+    descricao: "flag `pb-expurgo-retencao-001.desabilitado=true` interrompe qualquer execução em andamento no fim do lote corrente"
+    tempo_de_propagacao: "<= 60s"
+    testado_em: GameDay-2026-03
+  limites:
+    max_execucoes_por_dia: 2
+    min_intervalo_entre_execucoes_horas: 12
+  auditoria:
+    destino: "trilha de auditoria da plataforma (append-only)"
+    retencao_dias: 365
+    dados_pessoais: "nenhum: este playbook opera sobre metadados de objeto, não sobre conteúdo"
+
+o_que_este_arquivo_simplifica_de_proposito:
+  - "não há sintaxe de engine: isto é contrato de comportamento, não playbook executável"
+  - "não há estimativa de economia em R$: depende de preço de storage, da nuvem e do contrato, e número inventado aqui valeria menos que nenhum número"
+  - "não há lista de componentes: `<COMPONENTE-A>` é o ponto de extensão; a lista real é segredo industrial e não pertence a um repositório público"
+
+motivo_do_dado_ausente: >
+  Volume real de dados, nome de cluster/bucket, capacidade, custo e datas de
+  fechamento compõem retrato operacional de um ambiente específico. Nada disso é
+  publicável. O que se publica é o método: precondições que bloqueiam, teto por
+  execução, plano gravado antes de escrever, critério de parada e recuperação
+  testada.

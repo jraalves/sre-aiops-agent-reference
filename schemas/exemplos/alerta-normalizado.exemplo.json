@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "fingerprint": "a1b2c3d4e5f60718:svc-pagamento-instantaneo:slo-p95",
+  "recebido_em": "2026-05-14T17:32:05Z",
+  "primeiro_evento_em": "2026-05-14T17:30:00Z",
+  "origem": {
+    "sistema": "alertmanager",
+    "regra": "SloBurnRate-pagamento-instantaneo-fast",
+    "regra_url": "https://git.example.invalid/alertas/-/blob/main/rules/slo-pagamento-instantaneo.yaml",
+    "regiao": "br-sp-1"
+  },
+  "status": "firing",
+  "severidade": "S2",
+  "titulo": "p95 de pagamento instantâneo acima do objetivo há 15 min",
+  "descricao": "SLI de latência (p95 <= 650ms) em Viol de burn rate 14,4x nas janelas 1h e 5m. Tráfego na faixa sazonal esperada para quinta à tarde.",
+  "servico": {
+    "nome": "svc-pagamento-instantaneo",
+    "namespace": "pagamentos",
+    "ambiente": "producao",
+    "time": "sre-meios-de-pagamento",
+    "tier": "critico",
+    "camada": "api"
+  },
+  "sinal": {
+    "tipo": "metrica",
+    "nome": "sli:latencia_p95_ms",
+    "valor": 912.4,
+    "unidade": "ms",
+    "threshold": 650,
+    "baseline": {
+      "metodo": "sazonal",
+      "valor_esperado": 480.0,
+      "desvio_observado": 90.1,
+      "janela": "7d",
+      "amostras": 2016
+    },
+    "serie_sob_desvio": { "p50": 310.2, "p95": 912.4, "p99": 2410.0, "contagem": 184320 }
+  },
+  "slo": {
+    "nome": "pagamento-instantaneo",
+    "objetivo_pct": 99.0,
+    "burn_rate": 14.6,
+    "janelas": ["1h", "5m"],
+    "budget_restante_pct": 41.5,
+    "periodo": "30d"
+  },
+  "correlacao": {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7",
+    "correlation_id": "9f1c2b3a4d5e4f60a1b2c3d4e5f60718",
+    "tx_id": "TX000482",
+    "jornada": "pagamento-instantaneo",
+    "estagio": "autorizacao",
+    "fronteira_sem_trace": true
+  },
+  "evidencias": [
+    { "tipo": "dashboard", "descricao": "Golden signals do serviço", "url": "https://grafana.example.invalid/d/golden-signals/svc?var-service=svc-pagamento-instantaneo" },
+    { "tipo": "consulta_log", "descricao": "Logs da transação no elo legado", "query_template": "{service_name=\"adaptador-legado\"} | json | correlation_id=\"{correlation_id}\"" },
+    { "tipo": "mudanca", "descricao": "deploy 2.41.0 aplicado há 22 min (pipeline 8842)" },
+    { "tipo": "runbook", "descricao": "rb-latencia-pagamento-instantaneo", "url": "https://git.example.invalid/runbooks/-/blob/main/pagamentos/rb-latencia.md" }
+  ],
+  "dedupe": {
+    "contagem": 14,
+    "primeiro_em": "2026-05-14T17:30:00Z",
+    "ultimo_em": "2026-05-14T17:32:00Z",
+    "janela_segundos": 120,
+    "incidente_aberto": "INC-2026-0514-07"
+  },
+  "labels": {
+    "team": "sre-meios-de-pagamento",
+    "k8s_cluster": "eks-prod-1",
+    "k8s_namespace": "pagamentos",
+    "jornada_estagio": "autorizacao"
+  },
+  "raw_ref": "object://retencao-alertas/2026/05/14/a1b2c3d4e5f6.json",
+  "raw_sha256": "9b71c22269b21fcd8d5d4a8c5b0f7c2f1e6d9a0b3c4d5e6f708192a3b4c5d6e7",
+  "redacao_aplicada": ["remove:pan", "remove:cpf", "trunc:correlation_id"],
+  "qualidade_do_dado": {
+    "campos_ausentes": [],
+    "confianca": 0.96,
+    "motivo": "todos os campos de semáforo presentes; fronteira sem trace é característica do elo, não falha do alerta"
+  }
+}

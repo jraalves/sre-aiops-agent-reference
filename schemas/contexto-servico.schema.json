@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jraalves/sre-aiops-agent-reference/schemas/contexto-servico.schema.json",
+  "title": "Contexto de servico",
+  "description": "Pacote de contexto montado SOB DEMANDA para um alerta especifico (janela = agora - contexto declarativo). Nao e um CMDB e nao substitui catalogo de servico: e a projeção revisada do que o diagnóstico precisa, com a qualidade do dado declarada junto. Duas regras que sustentam o contrato: (1) todo item traz quando foi verificado por ultimo; (2) o que nao foi verificado vem como `nao_verificado`, nao como vazio.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "servico", "gerado_em", "janela", "qualidade"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "gerado_em": { "type": "string", "format": "date-time" },
+    "montado_por": { "type": "string", "description": "Servico/componente que montou o pacote (ex.: context-builder). Rastreabilidade: contexto errado tambem e bug e precisa de dono." },
+    "alerta_ref": { "type": "string", "description": "Fingerprint ou id do alerta que motivou a montagem. Permite responder 'o agente viu o que em que momento'." },
+    "janela": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mudancas_dias", "incidentes_dias"],
+      "properties": {
+        "mudancas_dias": { "type": "integer", "minimum": 0, "maximum": 90, "description": "Janela de mudancas consideradas 'recentes'. 7 dias e o default da referencia; em dominio de pagamento com ciclo de liquidacao longo, 14 e mais honesto." },
+        "incidentes_dias": { "type": "integer", "minimum": 0, "maximum": 365 },
+        "dependencias_profundidade": { "type": "integer", "minimum": 1, "maximum": 3, "description": "Profundidade do grafo. Acima de 3 o ruido de topologia passa a custar mais tokens do que agrega sinal." }
+      }
+    },
+    "servico": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nome", "time_dono"],
+      "properties": {
+        "nome": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{1,62}$" },
+        "camada": { "type": "string", "enum": ["api", "orquestracao", "fila", "batch", "legado", "canal", "infra"] },
+        "tier": { "type": "string", "enum": ["critico", "alto", "medio", "baixo"] },
+        "time_dono": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nome"],
+          "properties": {
+            "nome": { "type": "string" },
+            "plantao": { "type": "string", "description": "Identificador de escala (ex.: sre-pagamentos), nunca telefone nem pessoa fisica." },
+            "escalacao_horario": { "type": "string", "description": "Ex.: 24x7, horario-comercial. Define se 'notificar' significa acordar alguem." },
+            "repositorio": { "type": "string", "format": "uri" }
+          }
+        },
+        "slos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["nome", "objetivo_pct"],
+            "properties": {
+              "nome": { "type": "string" },
+              "sli": { "type": "string", "description": "Definicao operacional: o que conta como bom." },
+              "objetivo_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+              "objetivo_latencia_ms": { "type": "number", "exclusiveMinimum": 0 },
+              "janela": { "type": "string" },
+              "budget_restante_pct": { "type": "number" },
+              "medido_em": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "runbooks": {
+          "type": "array",
+          "description": "Fonte do RAG. Cada item precisa de `ultimo_teste_em`: runbook nunca testado e legenda de museu.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "titulo", "uri"],
+            "properties": {
+              "id": { "type": "string" },
+              "titulo": { "type": "string" },
+              "uri": { "type": "string", "description": "Referencia no repositorio (path + commit), nao URL de intranet." },
+              "escopo": { "type": "string", "description": "Que sintoma este runbook cobre, em uma linha - e o que o retriever usa como chave." },
+              "ultimo_teste_em": { "type": ["string", "null"], "format": "date-time" },
+              "testado_por": { "type": "string" },
+              "passos_de_escrita": { "type": "integer", "minimum": 0, "description": "Quantos passos alteram producao. Vai no prompt para o agente ponderar risco antes de propor." },
+              "tags": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "dependencias": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "a_frente": { "$ref": "#/$defs/listaDependencias" },
+            "atras": { "$ref": "#/$defs/listaDependencias" }
+          }
+        },
+        "topologia": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cluster": { "type": "string" },
+            "regiao": { "type": "string" },
+            "workload": { "type": "string" },
+            "replicas_observadas": { "type": "integer", "minimum": 0 },
+            "autoscale_ativo": { "type": "boolean" }
+          }
+        },
+        "fronteira_legado": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Como a jornada continua do outro lado, onde nao existe tracing nativo. Sem este bloco o agente assume 'sem sinal' onde na verdade e 'sinal em outro idioma'.",
+          "required": ["presente"],
+          "properties": {
+            "presente": { "type": "boolean" },
+            "mecanismo_correlacao": { "type": "string", "enum": ["correlation-id-em-header", "correlation-id-em-mensagem", "campo-de-arquivo", "tx-id-interno", "nenhum"] },
+            "aliases_do_id": { "type": "array", "items": { "type": "string" }, "description": "Nomes que a mesma chave assume no caminho (X-Correlation-ID, CORRID, CID). E a razao pela qual a correlacao precisa de mapa de alias, nao de um nome so." },
+            "normalizacao": { "type": "string", "description": "Ex.: maiusculas-sem-tracos, 32 chars. O ID que sai do legado nao e byte a byte o que entrou." },
+            "skew_de_relogio_ms": { "type": ["number", "null"], "description": "Estimado, nao assumido. Sem isto, a soma dos tempos por elo da jornada da negativa." },
+            "cobertura_de_log_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100, "description": "Percentual dos elos que realmente logam a chave. Na pratica e aqui que a jornada fica incompleta - nao no protocolo." },
+            "ultimo_ajuste_em": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      }
+    },
+    "mudancas_recentes": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "Deploy, mudanca de config, feature flag, escala, change window contratada. E o campo com maior valor preditivo em incidente de software e por isso o mais exigido em auditoria.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tipo", "quando"],
+        "properties": {
+          "tipo": { "type": "string", "enum": ["deploy", "config", "feature-flag", "scale", "manutencao-planejada", "migracao", "libera-regua"] },
+          "quando": { "type": "string", "format": "date-time" },
+          "referencia": { "type": "string", "description": "Id de pipeline/PR/change record (anonimizado)." },
+          "versao_anterior": { "type": "string" },
+          "versao_nova": { "type": "string" },
+          "autor_tipo": { "type": "string", "enum": ["humano", "pipeline", "agente", "desconhecido"], "description": "Se o agente executou a mudanca, ele precisa saber que foi ele. Memoria de sistema importa antes de opiniao." },
+          "reversivel": { "type": "boolean" },
+          "procedimento_de_rollback": { "type": ["string", "null"] },
+          "sinal_pos_mudanca": { "type": "string", "description": "O que a telemetria mostrou nos 15 min seguintes - ou 'sem sinal' quando nao havia." }
+        }
+      }
+    },
+    "incidentes_recentes": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "aberto_em", "severidade"],
+        "properties": {
+          "id": { "type": "string" },
+          "aberto_em": { "type": "string", "format": "date-time" },
+          "severidade": { "type": "string", "enum": ["S1", "S2", "S3", "S4"] },
+          "fingerprint": { "type": "string" },
+          "causa_classificada": { "type": "string" },
+          "mttr_min": { "type": "number", "minimum": 0 },
+          "acoes_pendentes": { "type": "integer", "minimum": 0, "description": "Acao de post-mortem vencida e preditor de reincidencia. O agente cita isto antes de propor 'so reiniciar de novo'." },
+          "pos_mortem_uri": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "sinais_vizinhos": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "Alertas disparados no mesmo periodo no mesmo servico/dependencias. E a materia-prima da correlacao: sem isto, o agente diagnostica um sintoma isolado de uma falha em cascata.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fingerprint", "titulo", "desde"],
+        "properties": {
+          "fingerprint": { "type": "string" },
+          "titulo": { "type": "string" },
+          "desde": { "type": "string", "format": "date-time" },
+          "severidade": { "type": "string" },
+          "relacao": { "type": "string", "enum": ["mesmo-servico", "dependencia", "dependente", "mesmo-host", "mesmo-deploy", "indeferido"] }
+        }
+      }
+    },
+    "capacidade": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Headroom no momento. Um agente que nao conhece capacidade propoe scale-out quando o gargalo e lock de fila, ou propoe reprocessar lote que nao cabe na janela.",
+      "properties": {
+        "cpu_pct_cota": { "type": ["number", "null"], "minimum": 0, "maximum": 200 },
+        "memoria_pct_cota": { "type": ["number", "null"], "minimum": 0, "maximum": 200 },
+        "p95_ms": { "type": ["number", "null"], "minimum": 0 },
+        "vazao_por_seg": { "type": ["number", "null"], "minimum": 0 },
+        "fila_profundidade": { "type": ["number", "null"], "minimum": 0 },
+        "fila_idade_max_s": { "type": ["number", "null"], "minimum": 0 },
+        "janela_batch_restante_min": { "type": ["number", "null"], "description": "Domínio de pagamento: liquidacao tem hora. 'Reprocessar agora' so e proposta valida se couber na janela." },
+        "medido_em": { "type": "string", "format": "date-time" }
+      }
+    },
+    "qualidade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cobertura_telemetria_pct", "itens_nao_verificados"],
+      "description": "Metadado de confiabilidade do proprio pacote. E a diferença entre um sistema que ajuda e um que da opinião com sotaque de fato.",
+      "properties": {
+        "cobertura_telemetria_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "itens_nao_verificados": { "type": "array", "items": { "type": "string" }, "description": "Ex.: ['runbook:rb-expurgo (sem teste ha 240d)']. Vai no prompt e no resultado: o agente herda a duvida." },
+        "fontes": { "type": "array", "items": { "type": "string" }, "description": "Quais sistemas responderam (e os que falharam, com 'falhou:')."},
+        "latencia_montagem_ms": { "type": "number", "minimum": 0 },
+        "tokens_aproximados": { "type": "integer", "minimum": 0, "description": "Custo entra no contrato porque custo nao controlado vira a razao pela qual o recurso e desligado no trimestre seguinte." }
+      }
+    }
+  },
+  "$defs": {
+    "listaDependencias": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["servico"],
+        "properties": {
+          "servico": { "type": "string" },
+          "tipo": { "type": "string", "enum": ["http", "grpc", "fila", "database", "arquivo", "legado", "externo"] },
+          "criticidade": { "type": "string", "enum": ["bloqueante", "degradante", "opcional"] },
+          "slo_heranca": { "type": "boolean", "description": "Se o SLO deste serviço depende do SLO da dependência." },
+          "timeout_ms": { "type": ["number", "null"] },
+          "retry_max": { "type": ["integer", "null"], "minimum": 0, "description": "Retentativa em dominio de pagamento tem efeito colateral financeiro (dobro de autorizacao). O agente precisa do numero para NAO sugerir aumentar retry sem criterio." }
+        }
+      }
+    }
+  }
+}

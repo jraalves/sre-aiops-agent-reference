@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.0",
+  "gerado_em": "2026-05-14T17:32:11Z",
+  "montado_por": "context-builder",
+  "alerta_ref": "a1b2c3d4e5f60718:svc-pagamento-instantaneo:slo-p95",
+  "janela": { "mudancas_dias": 7, "incidentes_dias": 90, "dependencias_profundidade": 2 },
+  "servico": {
+    "nome": "svc-pagamento-instantaneo",
+    "camada": "api",
+    "tier": "critico",
+    "time_dono": {
+      "nome": "sre-meios-de-pagamento",
+      "plantao": "sre-pagamentos-24x7",
+      "escalacao_horario": "24x7",
+      "repositorio": "https://git.example.invalid/pagamentos/svc-pagamento-instantaneo"
+    },
+    "slos": [
+      {
+        "nome": "pagamento-instantaneo",
+        "sli": "requisições com latência <= 650ms e sem 5xx / total de requisições válidas (exclui recusa de negócio)",
+        "objetivo_pct": 99.0,
+        "objetivo_latencia_ms": 650,
+        "janela": "30d",
+        "budget_restante_pct": 41.5,
+        "medido_em": "2026-05-14T17:32:00Z"
+      }
+    ],
+    "runbooks": [
+      {
+        "id": "rb-latencia-pagamento-instantaneo",
+        "titulo": "Latência alta em pagamento instantâneo",
+        "uri": "runbooks/pagamentos/rb-latencia-pagamento-instantaneo.md@3f2a19c",
+        "escopo": "p95 acima do objetivo com tráfego na faixa sazonal",
+        "ultimo_teste_em": "2026-04-18T14:00:00Z",
+        "testado_por": "GameDay-2026-04",
+        "passos_de_escrita": 3,
+        "tags": ["latencia", "fila", "legado"]
+      },
+      {
+        "id": "rb-expurgo-retencao",
+        "titulo": "Expurgo de artefatos e índices acima da política de retenção",
+        "uri": "runbooks/plataforma/rb-expurgo-retencao.md@3f2a19c",
+        "escopo": "volume de storage acima do limite ou custo anômalo",
+        "ultimo_teste_em": null,
+        "testado_por": "",
+        "passos_de_escrita": 5,
+        "tags": ["storage", "retencao", "finops"]
+      }
+    ],
+    "dependencias": {
+      "a_frente": [
+        { "servico": "gw-adquirencia-a", "tipo": "http", "criticidade": "bloqueante", "timeout_ms": 3000, "retry_max": 1, "slo_heranca": false }
+      ],
+      "atras": [
+        { "servico": "svc-tokenizacao", "tipo": "grpc", "criticidade": "bloqueante", "timeout_ms": 800, "retry_max": 0, "slo_heranca": true },
+        { "servico": "adaptador-legado", "tipo": "legado", "criticidade": "bloqueante", "timeout_ms": 5000, "retry_max": 0, "slo_heranca": true }
+      ]
+    },
+    "topologia": {
+      "cluster": "eks-prod-1",
+      "regiao": "br-sp-1",
+      "workload": "deployment/svc-pagamento-instantaneo",
+      "replicas_observadas": 12,
+      "autoscale_ativo": true
+    },
+    "fronteira_legado": {
+      "presente": true,
+      "mecanismo_correlacao": "correlation-id-em-mensagem",
+      "aliases_do_id": ["X-Correlation-Id", "correlation.id", "CORRID", "CID"],
+      "normalizacao": "maiúsculas, sem hífens, 32 chars",
+      "skew_de_relogio_ms": 420,
+      "cobertura_de_log_pct": 71.0,
+      "ultimo_ajuste_em": "2026-02-11T10:00:00Z"
+    }
+  },
+  "mudancas_recentes": [
+    {
+      "tipo": "deploy",
+      "quando": "2026-05-14T17:10:00Z",
+      "referencia": "pipeline-8842",
+      "versao_anterior": "2.40.4",
+      "versao_nova": "2.41.0",
+      "autor_tipo": "pipeline",
+      "reversivel": true,
+      "procedimento_de_rollback": "reverter o commit de aplicação no repositório GitOps e sincronizar (Argo CD), não `kubectl rollout undo`",
+      "sinal_pos_mudanca": "p95 subiu de 480ms para 900ms nos 15 min seguintes; taxa de erro estável"
+    },
+    {
+      "tipo": "feature-flag",
+      "quando": "2026-05-12T19:40:00Z",
+      "referencia": "flag:validacao-previa-token",
+      "autor_tipo": "humano",
+      "reversivel": true,
+      "procedimento_de_rollback": "desligar a flag (console de configuração, mudança declarativa)",
+      "sinal_pos_mudanca": "sem sinal registrado"
+    },
+    {
+      "tipo": "manutencao-planejada",
+      "quando": "2026-05-10T03:00:00Z",
+      "referencia": "change-4471",
+      "autor_tipo": "humano",
+      "reversivel": false,
+      "procedimento_de_rollback": null,
+      "sinal_pos_mudanca": "sem correlação temporal com o sinal atual"
+    }
+  ],
+  "incidentes_recentes": [
+    {
+      "id": "INC-2026-0412-03",
+      "aberto_em": "2026-04-12T17:55:00Z",
+      "severidade": "S2",
+      "fingerprint": "a1b2c3d4e5f60718:svc-pagamento-instantaneo:slo-p95",
+      "causa_classificada": "fila-saturada",
+      "mttr_min": 96,
+      "acoes_pendentes": 1,
+      "pos_mortem_uri": "postmortems/2026/04/inc-2026-0412-03.md"
+    },
+    {
+      "id": "INC-2026-0506-11",
+      "aberto_em": "2026-05-06T18:20:00Z",
+      "severidade": "S3",
+      "fingerprint": "b2c3d4e5f60718a1:adaptador-legado:corrid-perdido",
+      "causa_classificada": "id-perdido-na-fronteira",
+      "mttr_min": 214,
+      "acoes_pendentes": 2,
+      "pos_mortem_uri": "postmortems/2026/05/inc-2026-0506-11.md"
+    }
+  ],
+  "sinais_vizinhos": [
+    {
+      "fingerprint": "c3d4e5f60718a1b2:adaptador-legado:tempo-resposta",
+      "titulo": "Tempo de resposta do elo legado acima do p99 histórico",
+      "desde": "2026-05-14T17:29:00Z",
+      "severidade": "S3",
+      "relacao": "dependencia"
+    },
+    {
+      "fingerprint": "d4e5f60718a1b2c3:svc-tokenizacao:p99",
+      "titulo": "p99 de tokenização em alta",
+      "desde": "2026-05-14T17:26:00Z",
+      "severidade": "S4",
+      "relacao": "dependencia"
+    }
+  ],
+  "capacidade": {
+    "cpu_pct_cota": 61.0,
+    "memoria_pct_cota": 48.0,
+    "p95_ms": 912.4,
+    "vazao_por_seg": 205.0,
+    "fila_profundidade": 4820.0,
+    "fila_idade_max_s": 143.0,
+    "janela_batch_restante_min": 292.0,
+    "medido_em": "2026-05-14T17:32:00Z"
+  },
+  "qualidade": {
+    "cobertura_telemetria_pct": 88.0,
+    "itens_nao_verificados": [
+      "runbook:rb-expurgo-retencao (sem teste registrado)",
+      "dependência svc-tokenizacao: métrica de fila sem unidade declarada"
+    ],
+    "fontes": ["catalogo-servicos", "gitlab:pipelines", "jira:incidentes", "prometheus", "loki", "falhou:argocd-timeout-1s"],
+    "latencia_montagem_ms": 780.0,
+    "tokens_aproximados": 6400
+  }
+}

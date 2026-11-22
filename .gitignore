@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Saídas de análise local (o CSV de exemplo versionado é o único dataset deste repo)
+out/
+*.tmp
+*.csv.orig
+estimativa.md
+plano.json
+resultado.json
+
+# Segredos e configuração de ambiente: nunca, nem de teste
+.env
+.env.*
+*.pem
+*.key
+*.token
+credentials
+kubeconfig*
+*.kubeconfig
+
+# Listas de nomes proibidos para a varredura de anonimidade vivem FORA do
+# repositório público: a própria lista denunciaria quem ela protege.
+anonimia-bloqueio*.txt
+blocklist*.txt
+
+# Editores e SO
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

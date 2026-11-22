@@ -1,0 +1,191 @@
+{
+  "schema_version": "1.0",
+  "proposta_id": "prop-2026-05-14-0718-a1b2c3",
+  "gerada_em": "2026-05-14T17:33:02Z",
+  "incidente_ref": "INC-2026-0514-07",
+  "prompt_hash": "6f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "modelo": {
+    "id": "agente-diagnostico-v3",
+    "tipo": "hibrido",
+    "temperatura": 0,
+    "latencia_ms": 4100,
+    "custo_estimado_brl": 0.42,
+    "tokens_entrada": 6400,
+    "tokens_saida": 780,
+    "recuperacao": {
+      "corpus": "runbooks@3f2a19c",
+      "documentos": [
+        { "id": "rb-latencia-pagamento-instantaneo", "titulo": "Latência alta em pagamento instantâneo", "score": 0.86, "ultimo_teste_em": "2026-04-18T14:00:00Z" },
+        { "id": "rb-fila-consumidor-lento", "titulo": "Fila com consumidor lento e backlog crescente", "score": 0.71, "ultimo_teste_em": "2026-03-02T09:00:00Z" }
+      ],
+      "nenhuma_fonte_suficiente": false
+    }
+  },
+  "confianca": 0.74,
+  "diagnostico": {
+    "resumo": "p95 de pagamento instantâneo em 912ms (objetivo 650ms) há 15 min, com backlog de fila em 4.820 mensagens e idade máxima de 143s. Coincide no tempo com o deploy 2.41.0 (17:10) e com alta de p99 no elo legado a partir de 17:29. Tráfego dentro da faixa sazonal, então não é volume.",
+    "hipoteses": [
+      {
+        "descricao": "Regressão de latência no deploy 2.41.0: nova chamada de validação síncrona ao adaptador-legado sem timeout próprio, estourando o orçamento de latência da jornada",
+        "probabilidade": 0.62,
+        "evidencias": [
+          { "tipo": "mudanca", "conteudo": "deploy 2.41.0 aplicado às 17:10; p95 sai de 480ms para ~900ms nos 15 min seguintes", "referencia": "pipeline-8842" },
+          { "tipo": "traco", "conteudo": "span 'POST legado/validar' sem filho de rede, duração 1.180ms no p95", "referencia": "4bf92f3577b34da6a3ce929d0e0e4736" },
+          { "tipo": "incidente-anterior", "conteudo": "INC-2026-0412-03 teve assinatura de métrica parecida, causa raiz diversa (fila), o que reforça que só o burn não decide", "referencia": "INC-2026-0412-03" }
+        ],
+        "contra_evidencias": [
+          "a mesma alta aparece no elo legado antes de o p95 do serviço subir 3 minutos (17:26 vs 17:29), o que é compatível com causa externa compartilhada",
+          "nenhum erro 5xx: regressão de timeout normalmente gera erro antes de gerar só latência"
+        ],
+        "como_refutar": "comparar a duração do span filho da validação entre 2.40.4 e 2.41.0 no mesmo percentil; se não houver span novo, a hipótese cai"
+      },
+      {
+        "descricao": "Congestionamento no elo legado (capacidade do adapter), com reflexo em cascata no pagamento instantâneo",
+        "probabilidade": 0.28,
+        "evidencias": [
+          { "tipo": "serie-metrica", "conteudo": "p99 do adaptador-legado em 2.900ms (histórico 1.400ms) desde 17:29", "referencia": "sre_legado_requisicao_duration_seconds{quantile=\"0.99\"}" },
+          { "tipo": "capacidade", "conteudo": "CPU do serviço de origem em 61% da cota - folgado, logo o gargalo não é o próprio pod" }
+        ],
+        "contra_evidencias": ["backlog de fila começou a crescer 4 min ANTES da degradação do legado"],
+        "como_refutar": "verificar profundidade de fila por partição: se o backlog estiver concentrado em uma partição, é desbalanceamento local e não capacidade do legado"
+      },
+      {
+        "descricao": "Aumento sazonal de tráfego não previsto pelo baseline",
+        "probabilidade": 0.10,
+        "evidencias": [
+          { "tipo": "serie-metrica", "conteudo": "vazão 205/s vs 198/s esperados (desvio de 3,5%)", "referencia": "sre_jornada_requisicoes_total" }
+        ],
+        "contra_evidencias": ["desvio de 3,5% não explica 90% de aumento de p95"],
+        "como_refutar": "confirmar que o p95 por endpoint de leitura (sem o elo legado) permanece estável"
+      }
+    ],
+    "o_que_nao_sei": [
+      "Não há trace do outro lado da fronteira: a duração do processamento no legado é estimada por log, com skew de relógio estimado em 420ms",
+      "O runbook rb-expurgo-retencao não tem teste registrado e não foi usado como base",
+      "Sem sinal de fila por partição: a hipótese de desbalanceamento não pode ser avaliada com a telemetria atual"
+    ]
+  },
+  "acoes": [
+    {
+      "acao_id": "acao-1",
+      "intencao": "Confirmar ou derrubar a hipótese 1 medindo a duração da chamada de validação por versão",
+      "tipo": "consultar",
+      "modo": "somente-leitura",
+      "alvo": { "sistema": "kubernetes", "objeto": "svc/svc-pagamento-instantaneo", "ambiente": "producao" },
+      "comando_proposto": "curl -sG 'https://prometheus.example.invalid/api/v1/query' --data-urlencode 'query=sum by (service_version) (rate(sre_jornada_duration_seconds_sum{stage=\"validar\"}[5m])) / sum by (service_version) (rate(sre_jornada_duration_seconds_count{stage=\"validar\"}[5m]))'",
+      "risco": "baixo",
+      "idempotencia": { "chave": "prop-2026-05-14-0718-a1b2c3:acao-1", "repeticao_segura": true, "efeito_colateral_financeiro": false, "lock": null },
+      "blast_radius": { "abrangencia": "recurso", "clientes_estimados": 0, "reversivel_em_min": 0 },
+      "rollback": { "existe": true, "descricao": "ação de leitura: não há o que reverter", "testado_em": null },
+      "verificacao": {
+        "sucesso": "retorna duas séries (2.40.4 e 2.41.0) comparáveis no mesmo intervalo",
+        "fracasso": "series vazias => stage=validar sem instrumentação, escalar para leitura de log",
+        "observar_por_min": 2,
+        "plano_de_escalonamento": "sre-pagamentos-24x7"
+      },
+      "pre_requisitos": []
+    },
+    {
+      "acao_id": "acao-2",
+      "intencao": "Restaurar o orçamento de latência da jornada desligando a validação síncrona nova via flag declarativa",
+      "tipo": "corrigir-config",
+      "modo": "proposta-com-aprovacao",
+      "alvo": { "sistema": "argocd", "objeto": "application/svc-pagamento-instantaneo", "ambiente": "producao" },
+      "comando_proposto": null,
+      "pr_em_vez_de_comando": "https://git.example.invalid/pagamentos/gitops/-/merge_requests/4127",
+      "risco": "medio",
+      "idempotencia": {
+        "chave": "prop-2026-05-14-0718-a1b2c3:acao-2",
+        "repeticao_segura": true,
+        "efeito_colateral_financeiro": false,
+        "lock": "gitops-sync-svc-pagamento-instantaneo"
+      },
+      "blast_radius": { "abrangencia": "servico", "clientes_estimados": 12000, "reversivel_em_min": 4 },
+      "rollback": {
+        "existe": true,
+        "descricao": "reverter o commit da flag para o valor anterior e sincronizar; tempo de propagação medido em 4 min na última aplicação",
+        "testado_em": "2026-04-18T14:00:00Z"
+      },
+      "verificacao": {
+        "sucesso": "p95 abaixo de 650ms e backlog de fila abaixo de 500 mensagens em até 10 min",
+        "fracasso": "p95 permanece acima de 800ms por mais de 10 min: parar e acionar o elo legado, pois a causa é externa",
+        "observar_por_min": 15,
+        "plano_de_escalonamento": "sre-pagamentos-24x7 -> time-legado-oncall"
+      },
+      "pre_requisitos": [
+        "nenhum outro deploy em andamento no namespace pagamentos",
+        "a flag validacao-previa-token já existe no repositório GitOps (não criar configuração ad hoc em emergência)",
+        "janela de liquidacao não está nos próximos 60min (consultar capacidade.janela_batch_restante_min)"
+      ]
+    },
+    {
+      "acao_id": "acao-3",
+      "intencao": "Abrir canal de comunicação com o time do elo legado antes de qualquer mudança lá",
+      "tipo": "notificar",
+      "modo": "proposta-com-aprovacao",
+      "alvo": { "sistema": "jira", "objeto": "incidente/INC-2026-0514-07", "ambiente": "producao" },
+      "comando_proposto": null,
+      "risco": "baixo",
+      "idempotencia": { "chave": "prop-2026-05-14-0718-a1b2c3:acao-3", "repeticao_segura": true, "efeito_colateral_financeiro": false, "lock": null },
+      "blast_radius": { "abrangencia": "recurso", "clientes_estimados": 0, "reversivel_em_min": 1 },
+      "rollback": { "existe": true, "descricao": "comentar encerrando o vínculo", "testado_em": null },
+      "verificacao": {
+        "sucesso": "tarefa criada com a assinatura de evidência e o dono da investigação do elo legado",
+        "fracasso": "criação falhou: o incidente continua sem dono no outro lado",
+        "observar_por_min": 1,
+        "plano_de_escalonamento": "sre-pagamentos-24x7"
+      }
+    }
+  ],
+  "nao_recomendado": [
+    {
+      "acao": "aumentar retry_max do cliente HTTP de 1 para 3",
+      "motivo": "retry em instrução de pagamento sem chave de idempotência de negócio pode duplicar autorização; e o sintoma é latência, não indisponibilidade",
+      "regra_aplicada": "politica: proibido alterar política de retry em caminho de pagamento"
+    },
+    {
+      "acao": "escalar HP for deployment/svc-pagamento-instantaneo de 12 para 24 réplicas",
+      "motivo": "CPU em 61% da cota: réplica extra não ataca a hipótese dominante e consome headroom antes do fechamento do ciclo",
+      "regra_aplicada": "politica: escala exige evidência de saturação do recurso que se pretende escalar"
+    },
+    {
+      "acao": "reiniciar o adaptador-legado",
+      "motivo": "o elo legado está degradado, mas sem evidência de estado corrompido; reiniciar perderia o contexto de diagnóstico e não tem rollback testado",
+      "regra_aplicada": "politica: nunca propôr ação sobre componente cujo runbook não tem último teste registrado"
+    }
+  ],
+  "guardrails": {
+    "avaliados": [
+      "mudanca-em-janela-critica",
+      "outro-deploy-em-andamento",
+      "incidente-s1-ativo",
+      "idempotencia-da-acao",
+      "rollback-existente-e-testado",
+      "limite-de-taxa-de-escrita",
+      "kill-switch",
+      "aprovador-tem-permissao-no-ambiente"
+    ],
+    "bloqueios": [
+      { "regra": "sem-auto-execucao-em-producao", "descricao": "toda ação de escrita ficou em modo proposta, aguardando aprovação humana", "acao_bloqueada": "acao-2" }
+    ],
+    "kill_switch_ativo": false,
+    "limite_de_taxa_restante": 7
+  },
+  "execucao": {
+    "estado": "proposta",
+    "aprovacao": null,
+    "rejeicao": null,
+    "execucao_de": null,
+    "impacto_medido": null
+  },
+  "auditoria": {
+    "trilha": [
+      { "em": "2026-05-14T17:32:11Z", "evento": "contexto montado (780ms, 6 fontes, 1 falhou)", "ator": "agente" },
+      { "em": "2026-05-14T17:33:02Z", "evento": "proposta gerada, confiança 0,74, 3 ações, 3 descartadas", "ator": "agente" },
+      { "em": "2026-05-14T17:33:05Z", "evento": "notificação enviada ao plantão com diff resumido", "ator": "agente" }
+    ],
+    "retencao_dias": 365,
+    "redacao_aplicada": ["remove:pan", "remove:cpf", "trunc:correlation_id"],
+    "base_legal_de_dado_pessoal": "auditoria de segurança operacional de mudança automatizada; identificadores são usernames corporativos, sem contato direto"
+  }
+}

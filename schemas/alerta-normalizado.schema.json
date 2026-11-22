@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jraalves/sre-aiops-agent-reference/schemas/alerta-normalizado.schema.json",
+  "title": "Alerta normalizado",
+  "description": "Formato único de entrada da plataforma, independentemente de onde o alerta nasceu (Prometheus/Alertmanager, Dynatrace, Grafana, sintetico, job de reconciliacao). Todo o resto do pipeline depende deste contrato: correlacao, enriquecimento, decisao e auditoria. Regra de ouro: o normalizador preserva a origem (raw_ref + raw_sha256) e NUNCA descarta campo que nao entende - campo desconhecido vira label extra, nao linha perdida.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fingerprint",
+    "recebido_em",
+    "origem",
+    "status",
+    "severidade",
+    "servico",
+    "titulo"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Versao deste contrato. Mudanca incompativel incrementa a maior (1.0 -> 2.0) e o consumidor recusa em vez de chutar."
+    },
+    "fingerprint": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9:_\\-]{16,128}$",
+      "description": "Identidade do MESMO problema entre reavaliacoes e entre replicas. Calculado a partir de (origem, servico, sinal, regra, conjunto estavel de labels). PROIBIDO incluir timestamp, valor medido, texto formatado ou host efemero - senao a supressao vai a zero e o ruido volta inteiro."
+    },
+    "recebido_em": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Quando a plataforma recebeu. Diferente de `primeiro_evento_em`, que e quando o problema comecou: a diferenca entre as duas e a latencia do próprio pipeline de alertas, e ela e medida."
+    },
+    "primeiro_evento_em": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Inicio do sinal, segundo a origem. Usado no calculo de MTTD. Se a origem nao informa, o campo e omitido - nunca copiado de `recebido_em` para 'preencher'."
+    },
+    "origem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sistema", "regra"],
+      "properties": {
+        "sistema": {
+          "type": "string",
+          "minLength": 2,
+          "description": "Quem emitiu: alertmanager, dynatrace, grafana, synthetic-monitor, reconciliacao-lote. Anonimizado: nome de categoria de ferramenta, nunca hostname nem tenant."
+        },
+        "regra": {
+          "type": "string",
+          "description": "Identificador da regra/monitor na origem (ex.: SloBurnRate-settlement-fast)."
+        },
+        "regra_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link para a definicao da regra no repositorio de configuracao de alertas (versionado, revisavel em PR)."
+        },
+        "regiao": {
+          "type": "string",
+          "description": "Regiao/DC de origem, quando relevante para a decisao (ex.: br-sp-1)."
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["firing", "resolved", "acknowledged", "silenced"],
+      "description": "Estado declarado pela origem. `silenced` NAO suprime o evento: entra, e marcado e some do disparo. Silencio que esconde incidente e o achado, nao o bug."
+    },
+    "severidade": {
+      "type": "string",
+      "enum": ["S1", "S2", "S3", "S4"],
+      "description": "Vocabulario unico da plataforma. Traduzido na borda a partir de critical/warning/info/P1-P5 da origem. O agente NUNCA reavalia severidade: ele propoe, e a severidade e decisao de negocio."
+    },
+    "titulo": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 200,
+      "description": "Uma linha, imperativa, com o que doi: 'p99 de liquidacao acima do objetivo ha 15 min'. Sem 'ALERT', sem timestamp no texto."
+    },
+    "descricao": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "Contexto curto, em texto, ja livre de PII pelo redator da regra. Nao substitui os campos estruturados."
+    },
+    "servico": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nome"],
+      "properties": {
+        "nome": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9\\-]{1,62}$",
+          "description": "Mesmo `service.name` do OpenTelemetry. Ex.: svc-pagamento-instantaneo."
+        },
+        "namespace": { "type": "string" },
+        "ambiente": {
+          "type": "string",
+          "enum": ["producao", "pre-producao", "hml", "dev"],
+          "description": "Guardrail: fora de producao o agente tem politica de escrita mais liberal, e o log diz qual politica usou."
+        },
+        "time": { "type": "string", "description": "Time dono (metadata de catalogo), ex.: sre-meios-de-pagamento." },
+        "tier": {
+          "type": "string",
+          "enum": ["critico", "alto", "medio", "baixo"],
+          "description": "Classificacao de criticidade que define quem pode ser acordado e qual blast radius e aceitavel."
+        },
+        "camada": {
+          "type": "string",
+          "enum": ["api", "orquestracao", "fila", "batch", "legado", "canal", "infra"],
+          "description": "Onde o servico vive na jornada. E o que faz o agente saber que um sinal em `legado` nao tem trace e exigir correlacao por ID de negocio."
+        }
+      }
+    },
+    "sinal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tipo", "nome"],
+      "properties": {
+        "tipo": {
+          "type": "string",
+          "enum": ["metrica", "log", "trace", "evento", "sintetico", "negocio"],
+          "description": "Classe do sinal. `negocio` existe porque recusa de transacao em massa e sinal operacional, nao apenas analitico."
+        },
+        "nome": { "type": "string", "description": "Métrica/evento: ex. sli:latencia_p95_ms, jornada:taxa_conclusao." },
+        "valor": { "type": ["number", "boolean", "string", "null"] },
+        "unidade": { "type": "string", "description": "ms, ratio, 1/s, count, BRL. Sem unidade o numero e ambiguo e o agente nao pode inferir." },
+        "threshold": { "type": ["number", "null"] },
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "metodo": { "type": "string", "enum": ["estatico", "janela-rolante", "sazonal", "aprendido"] },
+            "valor_esperado": { "type": "number" },
+            "desvio_observado": { "type": "number" },
+            "janela": { "type": "string", "description": "Ex.: 7d, 1h, 30m. Baselearn sem janela declarada e chute elegante." },
+            "amostras": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "serie_sob_desvio": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "p50": { "type": "number" },
+            "p95": { "type": "number" },
+            "p99": { "type": "number" },
+            "contagem": { "type": "number" }
+          },
+          "description": "Distribuicao no momento do disparo. Vai junto porque media sozinha esconde a cauda, e e na cauda que mora timeout de liquidacao."
+        }
+      }
+    },
+    "slo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nome"],
+      "properties": {
+        "nome": { "type": "string", "description": "Ex.: settlement." },
+        "objetivo_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "burn_rate": { "type": "number", "minimum": 0 },
+        "janelas": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ex.: ['5m','1h']. Multi-janela entra no payload para o agente saber se o alerta e rapido ou lento - muda a prioridade da proposta."
+        },
+        "budget_restante_pct": { "type": "number", "minimum": -100, "maximum": 100 },
+        "periodo": { "type": "string", "description": "Janela de objetivo, ex.: 30d." }
+      }
+    },
+    "correlacao": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "span_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "description": "Chave de negocio da jornada. E a unica que sobrevive a fronteira sem OTel (mainframe, fila, lote). Nunca contem PAN, documento fiscal nem identificador pessoal."
+        },
+        "tx_id": { "type": "string" },
+        "jornada": { "type": "string", "description": "Ex.: pagamento-instantaneo, liquidacao-lote." },
+        "estagio": {
+          "type": "string",
+          "enum": ["iniciacao", "autorizacao", "captura", "liquidacao", "conciliacao", "estorno"],
+          "description": "Ponto da jornada onde o sinal nasceu. Sem isso, dois alertas em servicos diferentes nao sao reconheciveis como a mesma transacao."
+        },
+        "fronteira_sem_trace": {
+          "type": "boolean",
+          "description": "true quando o proximo elo nao propaga contexto distribuido (ex.: chamada a sistema legado). O agente entao degrada de trace para correlacao por ID/log e o relatorio registra a degradacao."
+        }
+      }
+    },
+    "evidencias": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "Pontos de partida para investigacao. A plataforma so aceita link montavel por template - nunca URL com credencial embutida.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tipo"],
+        "properties": {
+          "tipo": { "type": "string", "enum": ["dashboard", "consulta_metrica", "consulta_log", "traco", "mudanca", "ticket", "runbook", "topologia"] },
+          "descricao": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "query_template": { "type": "string", "description": "Ex.: {servico} | json | correlation_id=\"{correlation_id}\". Guardada como template para nao virar segredo nem PII em repouso." }
+        }
+      }
+    },
+    "dedupe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contagem": { "type": "integer", "minimum": 1, "description": "Quantas vezes este fingerprint chegou desde a abertura do incidente." },
+        "primeiro_em": { "type": "string", "format": "date-time" },
+        "ultimo_em": { "type": "string", "format": "date-time" },
+        "janela_segundos": { "type": "integer", "minimum": 0 },
+        "incidente_aberto": { "type": "string", "description": "Id do incidente/agregado ja aberto para este fingerprint, se existir." }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "maxProperties": 40,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_\\.\\-]{0,62}$" },
+      "additionalProperties": { "type": "string", "maxLength": 256 },
+      "description": "Extensao controlada. Chave minuscula, valor string, teto de 40 pares e 256 chars por valor. Lista de labels proibidas (PAN, cpf, cnpj, cvv, email, telefone, token, cookie, autorizacao) e aplicada no normalizador, com teste dedicado."
+    },
+    "raw_ref": {
+      "type": "string",
+      "description": "Ponteiro para o payload original no storage de retencao (ex.: s3://bucket-prefixo/2026/05/01/alerta-9f1c.json). Nunca o payload em si: o original pode conter dado que o contrato nao permite replicar."
+    },
+    "raw_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash do payload original: prova de integridade e forma de amarrar o registro ao que foi recebido, sem guardar o conteudo."
+    },
+    "redacao_aplicada": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Quais regras de ofuscacao foram aplicadas (ex.: ['remove:pan','remove:cpf','trunc:host']). Audita-se o que saiu, nao so o que entrou."
+    },
+    "qualidade_do_dado": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "campos_ausentes": { "type": "array", "items": { "type": "string" } },
+        "confianca": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fração de campos obrigatorios-e-de-semaforo presentes. O agente declara confianca baixa em vez de disfarçar." },
+        "motivo": { "type": "string" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0",
+      "fingerprint": "a1b2c3d4e5f60718:svc-pagamento-instantaneo:p95-latencia",
+      "recebido_em": "2026-05-14T14:32:05Z",
+      "primeiro_evento_em": "2026-05-14T14:30:00Z",
+      "origem": {
+        "sistema": "alertmanager",
+        "regra": "SloBurnRate-pagamento-instantaneo-fast",
+        "regra_url": "https://git.example.invalid/alertas/-/blob/main/rules/slo-pagamento.yaml"
+      },
+      "status": "firing",
+      "severidade": "S2",
+      "titulo": "p95 de pagamento instantaneo acima do objetivo ha 15 min",
+      "servico": {
+        "nome": "svc-pagamento-instantaneo",
+        "namespace": "pagamentos",
+        "ambiente": "producao",
+        "time": "sre-meios-de-pagamento",
+        "tier": "critico",
+        "camada": "api"
+      },
+      "sinal": {
+        "tipo": "metrica",
+        "nome": "sli:latencia_p95_ms",
+        "valor": 912.4,
+        "unidade": "ms",
+        "threshold": 650,
+        "baseline": { "metodo": "sazonal", "valor_esperado": 480.0, "desvio_observado": 90.1, "janela": "7d", "amostras": 2016 },
+        "serie_sob_desvio": { "p50": 310.2, "p95": 912.4, "p99": 2410.0, "contagem": 184320 }
+      },
+      "slo": { "nome": "pagamento-instantaneo", "objetivo_pct": 99.0, "burn_rate": 6.2, "janelas": ["30m", "6h"], "budget_restante_pct": 41.5, "periodo": "30d" },
+      "correlacao": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "correlation_id": "9f1c2b3a4d5e4f60a1b2c3d4e5f60718",
+        "tx_id": "TX000482",
+        "jornada": "pagamento-instantaneo",
+        "estagio": "autorizacao",
+        "fronteira_sem_trace": true
+      },
+      "evidencias": [
+        { "tipo": "dashboard", "descricao": "Golden signals do servico", "url": "https://grafana.example.invalid/d/golden/svc?var-service=svc-pagamento-instantaneo" },
+        { "tipo": "consulta_log", "query_template": "{service_name=\"svc-pagamento-instantaneo\"} | json | correlation_id=\"{correlation_id}\"" },
+        { "tipo": "mudanca", "descricao": "deploy 2.41.0 ha 22 min" }
+      ],
+      "dedupe": { "contagem": 14, "primeiro_em": "2026-05-14T14:30:00Z", "ultimo_em": "2026-05-14T14:32:00Z", "janela_segundos": 120 },
+      "labels": { "team": "sre-meios-de-pagamento", "k8s_cluster": "eks-prod-1", "k8s_namespace": "pagamentos" },
+      "raw_ref": "object://retencao-alertas/2026/05/14/a1b2c3d4.json",
+      "raw_sha256": "9b71c22269b21fcd8d5d4a8c5b0f7c2f1e6d9a0b3c4d5e6f708192a3b4c5d6e7",
+      "redacao_aplicada": ["remove:pan", "trunc:correlation_id"],
+      "qualidade_do_dado": { "campos_ausentes": ["slo.periodo"], "confianca": 0.92, "motivo": "origem nao informa periodo do objetivo" }
+    }
+  ]
+}
