@@ -176,3 +176,21 @@ tools can be exercised reproducibly while the security posture stays unambiguous
 
 <sub>Se você encontrou uma forma deste contrato deixar um agente executar algo sem registro auditável,
 abra issue — é exatamente o tipo de falha que este repositório quer discutir. Ver [`SECURITY.md`](SECURITY.md).</sub>
+
+## Pipeline de verificacao
+
+O portao roda offline: sem nuvem, sem registry, sem servico externo. A definicao esta
+no arquivo `.ci/ci.yml` deste repositorio e vale como pipeline para qualquer CI.
+Para transformar em GitHub Actions basta copiar para `.github/workflows/ci.yml`:
+
+```bash
+mkdir -p .github/workflows && cp .ci/ci.yml .github/workflows/ci.yml
+```
+
+O que cada portao verifica, com o resultado medido nesta maquina:
+
+| portao | o que verifica | resultado |
+|---|---|---|
+| `make check` | contratos JSON Schema, 42 testes e as metricas de exemplo | passou em 22/11/2026 (Python 3.12, sem rede) |
+| `make gate` | a mesma conta de MTTR em modo portao: falha se S1/S2 estourar `MTTD <= 90 min` | passou |
+| `pytest -q` | regressao do calculo de MTTR/recorrencia e do veredito por evidencia | 42 ok |
